@@ -13,7 +13,7 @@ contract lnedingNft is IERC721Receiver {
         uint128 price;
     }
 
-    mapping(address user => mapping(address contractNft => ))
+    mapping(address user => mapping(address nftContract => NftInfo))  
 
 
 
