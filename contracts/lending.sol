@@ -256,7 +256,7 @@ contract LendingNft is IERC721Receiver {
         Request memory request = s_requests[requestId];
 
         require(request.status != RequestStatus.Liquidated, "Position is already liquidated");
-        require(request.user != liquidator, "Can't liquidate your own position");
+        require(request.user != liquidator, "Cant liquidate your own position");
 
         if(checkHealthFactor(user) < LIQUIDATION_TRESHOLD)
         {
@@ -268,7 +268,7 @@ contract LendingNft is IERC721Receiver {
             uint256 collaterallAmount = s_collaterals[request.user].deposit;
             s_collaterals[request.user].deposit = 0;
             //
-            //IERC20().transfer
+            //transfer native tokens to liquidator
             request.status = RequestStatus.Liquidated;
             emit Liquidation(requestId, msg.sender, collaterallAmount, block.timestamp);
         }
