@@ -6,31 +6,75 @@ import {IERC20} from "@openzeppelin/contracts/interfaces/IERC20.sol";
 import {IERC721} from "@openzeppelin/contracts/interfaces/IERC721.sol";
 import {IERC721Receiver} from "@openzeppelin/contracts/interfaces/IERC721Receiver.sol";
 
-contract lnedingNft is IERC721Receiver {
+contract LendingNft is IERC721Receiver {
+    error LendingNft__NotAnOwnerOfTokenId();
+    error LendingNft__NotAnAcceptor();
+    error LendingNft__ErrorPrice();
+    error LendingNft__NotSuchNft(address token, uint256 tokenId);
+    error LendingNft__IllHealthFactor();
+    error LendingNft_NotAnInvestor();
 
-    event invested(address indexed _from, uint amount, uint256 _timestamp);
-    event withdrew(address indexed _from, uint amount, uint256 _timestamp);
-
+    event invested(
+        address indexed _from, 
+        uint amount, 
+        uint256 _timestamp
+    );
     
+    event withdrew(
+        address indexed _from,
+        uint amount, 
+        uint256 _timestamp
+    );
+    
+    event UserRequest(
+        address indexed user,
+        address indexed token,
+        uint256 indexed id,
+        uint256 requestedPrice,
+        uint256 floorPrice
+    );
+
+    event Accept(
+        uint256 indexed requestId, 
+        uint256 indexed price
+    );
+
+    event ReceiveNft(
+        address indexed from,
+        address indexed token,
+        uint256 tokenId
+    );
+
+    event WithdrawNft(
+        address indexed to,
+        address indexed token,
+        uint256 indexed tokenId
+    );
 
     //Owns a market, Liquidate and moderate the lends
     address owner;
+    address private s_acceptor;
+    
+    uint256 private constant PRECISION = 1e18;
+    uint256 private constant LIQUIDATION_TRESHOLD = 2e18;
+    uint256 private constant FEE = 3;
 
-    constructor() {
+    constructor(address acceptor) payable {
         owner = msg.sender;
+        s_acceptor = acceptor;
     }
 
-    modifier onlyModerator(address _to){
-        require(msg.sender == owner, "You are not an owner!");
-        require(_to != address(0), "Error! Incorrect adress");
+    modifier onlyModerator(){
+        require(msg.sender == s_acceptor, "You are not an acceptor!");
         _;
     }
-
 
     struct invInfo{
         uint256 amount;
         uint256 timestamp;
     }
+
+    mapping(address => bool) addressInvestorExist;
 
     mapping(address investor => invInfo) investors;
 
@@ -39,7 +83,107 @@ contract lnedingNft is IERC721Receiver {
         uint128 price;
     }
 
-    mapping(address user => mapping(address nftContract => NftInfo)) users;
+    enum RequestStatus {
+        Pending,
+        Accepted,
+        Rejected
+    }
+
+    struct Request {
+        address user;
+        address nftContract;
+        uint256 id;
+        uint256 requestedPrice;
+        uint256 floorPrice;
+        RequestStatus status;
+    }
+
+    struct Collateral {
+        uint256 deposit;
+        uint256 borrow;
+    }
+
+    // mapping(address user => mapping(address nftContract => NftInfo)) users;
+    mapping(address user => mapping(address nftContract => mapping(uint256 id => uint256 price))) depositedNfts;
+    Request[] private s_requests;
+    mapping(address user => Collateral) s_collaterals;
+
+    function requestDepositNft(
+        address tokenAddr,
+        uint256 tokenId,
+        uint256 _requestedPrice,
+        uint256 _floorPrice
+    ) external {
+        if (IERC721(tokenAddr).ownerOf(tokenId) != msg.sender)
+            revert LendingNft__NotAnOwnerOfTokenId();
+
+        s_requests.push(
+            Request({
+                user: msg.sender,
+                nftContract: tokenAddr,
+                id: tokenId,
+                requestedPrice: _requestedPrice,
+                floorPrice: _floorPrice,
+                status: RequestStatus.Pending
+            })
+        );
+
+        emit UserRequest(
+            msg.sender,
+            tokenAddr,
+            tokenId,
+            _requestedPrice,
+            _floorPrice
+        );
+    }
+
+    function acceptDepositAndTransferNft(
+        uint256 requestId,
+        uint256 price
+    ) external {
+        if (msg.sender != s_acceptor) revert LendingNft__NotAnAcceptor();
+        Request memory request = s_requests[requestId];
+
+        if (price < request.floorPrice) revert LendingNft__ErrorPrice();
+
+        request.status = RequestStatus.Accepted;
+        depositedNfts[request.user][request.nftContract][request.id] = price;
+        s_collaterals[request.user].deposit += price;
+
+        emit Accept(requestId, price);
+
+        IERC721(request.nftContract).safeTransferFrom(
+            request.user,
+            address(this),
+            request.id
+        );
+    }
+
+    function withdrawNft(address token, uint256 tokenId) external {
+        uint256 price = depositedNfts[msg.sender][token][tokenId];
+        if (price == 0) revert LendingNft__NotSuchNft(token, tokenId);
+
+        s_collaterals[msg.sender].deposit -= price;
+        if (checkHealthFactor(msg.sender) < LIQUIDATION_TRESHOLD)
+            revert LendingNft__IllHealthFactor();
+        delete depositedNfts[msg.sender][token][tokenId];
+
+        emit WithdrawNft(msg.sender, token, tokenId);
+
+        IERC721(token).transferFrom(address(this), msg.sender, tokenId);
+    }
+
+    function checkHealthFactor(
+        address user
+    ) public view returns (uint256 healthFactor) {
+        if (s_collaterals[user].borrow == 0) {
+            healthFactor = s_collaterals[user].deposit;
+        } else {
+            healthFactor =
+                (s_collaterals[user].deposit * PRECISION) /
+                s_collaterals[user].borrow;
+        }
+    }
 
     function onERC721Received(
         address operator,
@@ -49,33 +193,46 @@ contract lnedingNft is IERC721Receiver {
     ) external returns (bytes4) {}
 
     function deposit() public payable{
-        emit invested(msg.sender, msg.value, block.timestamp);
-
         //?Timestamp? 
         invInfo memory newInv = invInfo(
-            msg.value,
+            msg.value - ((msg.value * FEE) / 100),
             block.timestamp
         );
 
         investors[msg.sender] = newInv;
+        addressInvestorExist[msg.sender] = true;
+
+        emit invested(msg.sender, msg.value, block.timestamp);
     }
 
     // payable для вызова msg.value
-    function withdraw(address payable _to) payable public{
-        emit withdrew(msg.sender, msg.value, block.timestamp);
-
-        //TODO Проверка на то что тот кто отправляет запрос на снятие - инвестор
-        //require(msg.sender == investors());
+    function withdraw(address payable _to, uint256 amount) payable public{
+       if(!(addressInvestorExist[_to])) revert LendingNft_NotAnInvestor();
+       if(amount > investors[_to].amount) revert LendingNft__ErrorPrice();
 
         _to.transfer(investors[_to].amount);
+
+        if(investors[_to].amount == 0)
+        {
+            delete investors[_to];
+            delete addressInvestorExist[_to];
+        }
+        emit withdrew(msg.sender, amount, block.timestamp);
     }
 
-    function checkHealthFactor(address _to) internal onlyModerator(_to){
-        
-    }
+    function liquidate(
+        address user, 
+        address token, 
+        uint256 tokenId, 
+        address payable _investor, 
+        uint256 amount
+        ) internal onlyModerator(){
 
-    function liquidate(address _to) internal onlyModerator(_to){
-
+        if(checkHealthFactor(user) < LIQUIDATION_TRESHOLD)
+        {
+            withdraw(_investor, amount);
+            //withdrawNft(token, tokenId);
+        }
     }
 
     receive() external payable {
