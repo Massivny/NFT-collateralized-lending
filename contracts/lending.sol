@@ -16,20 +16,28 @@ contract LendingNft is IERC721Receiver {
 
     event invested(
         address indexed _from, 
-        uint amount, 
+        uint256 indexed amount, 
         uint256 _timestamp
     );
     
     event withdrew(
-        address indexed _from,
-        uint amount, 
+        address indexed _to,
+        uint256 indexed amount, 
         uint256 _timestamp
+    );
+
+    event Liquidation(
+        uint256 indexed requestId, 
+        address indexed liquidator, 
+        uint256 collateralAmount,
+        uint256 liquidationTime
     );
     
     event UserRequest(
         address indexed user,
         address indexed token,
         uint256 indexed id,
+        uint256 duration,
         uint256 requestedPrice,
         uint256 floorPrice
     );
@@ -42,7 +50,7 @@ contract LendingNft is IERC721Receiver {
     event ReceiveNft(
         address indexed from,
         address indexed token,
-        uint256 tokenId
+        uint256 indexed tokenId
     );
 
     event WithdrawNft(
@@ -86,7 +94,8 @@ contract LendingNft is IERC721Receiver {
     enum RequestStatus {
         Pending,
         Accepted,
-        Rejected
+        Rejected,
+        Liquidated
     }
 
     struct Request {
@@ -95,6 +104,8 @@ contract LendingNft is IERC721Receiver {
         uint256 id;
         uint256 requestedPrice;
         uint256 floorPrice;
+        uint256 startsAt;
+        uint256 endsAt;
         RequestStatus status;
     }
 
@@ -112,7 +123,8 @@ contract LendingNft is IERC721Receiver {
         address tokenAddr,
         uint256 tokenId,
         uint256 _requestedPrice,
-        uint256 _floorPrice
+        uint256 _floorPrice,
+        uint256 _duration
     ) external {
         if (IERC721(tokenAddr).ownerOf(tokenId) != msg.sender)
             revert LendingNft__NotAnOwnerOfTokenId();
@@ -124,6 +136,8 @@ contract LendingNft is IERC721Receiver {
                 id: tokenId,
                 requestedPrice: _requestedPrice,
                 floorPrice: _floorPrice,
+                startsAt: 0,
+                endsAt: 0,
                 status: RequestStatus.Pending
             })
         );
@@ -133,13 +147,15 @@ contract LendingNft is IERC721Receiver {
             tokenAddr,
             tokenId,
             _requestedPrice,
+            _duration,
             _floorPrice
         );
     }
 
     function acceptDepositAndTransferNft(
         uint256 requestId,
-        uint256 price
+        uint256 price,
+        uint256 duration
     ) external {
         if (msg.sender != s_acceptor) revert LendingNft__NotAnAcceptor();
         Request memory request = s_requests[requestId];
@@ -149,6 +165,8 @@ contract LendingNft is IERC721Receiver {
         request.status = RequestStatus.Accepted;
         depositedNfts[request.user][request.nftContract][request.id] = price;
         s_collaterals[request.user].deposit += price;
+        request.startsAt = block.timestamp;
+        request.endsAt = block.timestamp + duration;
 
         emit Accept(requestId, price);
 
@@ -159,7 +177,7 @@ contract LendingNft is IERC721Receiver {
         );
     }
 
-    function withdrawNft(address token, uint256 tokenId) external {
+    function withdrawNft(address token, uint256 tokenId) public {
         uint256 price = depositedNfts[msg.sender][token][tokenId];
         if (price == 0) revert LendingNft__NotSuchNft(token, tokenId);
 
@@ -220,18 +238,39 @@ contract LendingNft is IERC721Receiver {
         emit withdrew(msg.sender, amount, block.timestamp);
     }
 
+    function checkInvestitionBalance(
+        address _investor
+    ) public view returns(uint256 depositWithRewards){
+        require(addressInvestorExist[_investor], "You are not an investor!");
+
+        depositWithRewards = investors[_investor].amount;
+    }
+
     function liquidate(
-        address user, 
-        address token, 
-        uint256 tokenId, 
-        address payable _investor, 
-        uint256 amount
-        ) internal onlyModerator(){
+        address liquidator, 
+        address user,
+        uint256 requestId
+        ) internal{
+        if (msg.sender != s_acceptor) revert LendingNft__NotAnAcceptor();
+        
+        Request memory request = s_requests[requestId];
+
+        require(request.status != RequestStatus.Liquidated, "Position is already liquidated");
+        require(request.user != liquidator, "Can't liquidate your own position");
 
         if(checkHealthFactor(user) < LIQUIDATION_TRESHOLD)
         {
-            withdraw(_investor, amount);
-            //withdrawNft(token, tokenId);
+            IERC721(request.nftContract).safeTransferFrom(
+                address(this),
+                msg.sender,
+                request.id
+            );
+            uint256 collaterallAmount = s_collaterals[request.user].deposit;
+            s_collaterals[request.user].deposit = 0;
+            //
+            //IERC20().transfer
+            request.status = RequestStatus.Liquidated;
+            emit Liquidation(requestId, msg.sender, collaterallAmount, block.timestamp);
         }
     }
 
