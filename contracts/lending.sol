@@ -7,12 +7,23 @@ import {IERC721} from "@openzeppelin/contracts/interfaces/IERC721.sol";
 import {IERC721Receiver} from "@openzeppelin/contracts/interfaces/IERC721Receiver.sol";
 
 contract LendingNft is IERC721Receiver {
+
+//---------------------------------------------------------------------------------------
+//                                  ERRORS
+//---------------------------------------------------------------------------------------
     error LendingNft__NotAnOwnerOfTokenId();
     error LendingNft__NotAnAcceptor();
     error LendingNft__ErrorPrice();
     error LendingNft__NotSuchNft(address token, uint256 tokenId);
     error LendingNft__IllHealthFactor();
     error LendingNft_NotAnInvestor();
+    error LendingNft__NotEnoughEth();
+    error LendingNft__NotABorrower();
+    error LendingNft__AlreadyRepay();
+
+//---------------------------------------------------------------------------------------
+//                                  EVENTS
+//---------------------------------------------------------------------------------------
 
     event invested(
         address indexed _from, 
@@ -37,7 +48,6 @@ contract LendingNft is IERC721Receiver {
         address indexed user,
         address indexed token,
         uint256 indexed id,
-        uint256 duration,
         uint256 requestedPrice,
         uint256 floorPrice
     );
@@ -59,22 +69,36 @@ contract LendingNft is IERC721Receiver {
         uint256 indexed tokenId
     );
 
+    event BorrowEth(
+        address indexed user,
+        uint256 amount,
+        uint256 indexed borrowId
+    );
+
+    event RepayLoan(
+        address indexed user,
+        uint256 indexed borrowId,
+        uint256 totalRepay
+    );
+
+
+//---------------------------------------------------------------------------------------
+//                                STATE VARS AND STRUCTURES 
+//---------------------------------------------------------------------------------------
+
     //Owns a market, Liquidate and moderate the lends
     address owner;
     address private s_acceptor;
     
+    uint256 private constant FEE = 3e18;
     uint256 private constant PRECISION = 1e18;
     uint256 private constant LIQUIDATION_TRESHOLD = 2e18;
-    uint256 private constant FEE = 3;
+    uint256 private constant DEBT_FEE_PER_DAY = 5e15;
+    uint256 private constant DURATION = 1 days;
 
     constructor(address acceptor) payable {
         owner = msg.sender;
         s_acceptor = acceptor;
-    }
-
-    modifier onlyModerator(){
-        require(msg.sender == s_acceptor, "You are not an acceptor!");
-        _;
     }
 
     struct invInfo{
@@ -82,9 +106,8 @@ contract LendingNft is IERC721Receiver {
         uint256 timestamp;
     }
 
-    mapping(address => bool) addressInvestorExist;
-
     mapping(address investor => invInfo) investors;
+    mapping(address => bool) addressInvestorExist;
 
     struct NftInfo {
         uint128 id;
@@ -112,10 +135,22 @@ contract LendingNft is IERC721Receiver {
         uint256 borrow;
     }
 
-    // mapping(address user => mapping(address nftContract => NftInfo)) users;
+    struct BorrowInstance {
+        address user;
+        uint256 amount;
+        uint256 loanStart;
+        uint256 loanEnd;
+    }
+
     mapping(address user => mapping(address nftContract => mapping(uint256 id => uint256 price))) depositedNfts;
     Request[] private s_requests;
     mapping(address user => Collateral) s_collaterals;
+    BorrowInstance[] private s_borrows;
+    mapping(address user => uint256[] ids) private s_borrowIds;
+
+//---------------------------------------------------------------------------------------
+//                                   USER + ACCEPTOR
+//---------------------------------------------------------------------------------------
 
     function requestDepositNft(
         address tokenAddr,
@@ -194,6 +229,70 @@ contract LendingNft is IERC721Receiver {
         }
     }
 
+    function borrowEth(uint256 _amount) public returns (uint256) {
+        if (address(this).balance < _amount) revert LendingNft__NotEnoughEth();
+
+        s_collaterals[msg.sender].borrow += _amount;
+        if (checkHealthFactor(msg.sender) < LIQUIDATION_TRESHOLD)
+            revert LendingNft__IllHealthFactor();
+
+        s_borrows.push(
+            BorrowInstance({
+                user: msg.sender,
+                amount: _amount,
+                loanStart: block.timestamp,
+                loanEnd: 0
+            })
+        );
+
+        uint256 borrowId = s_borrows.length - 1;
+
+        s_borrowIds[msg.sender].push(borrowId);
+
+        emit BorrowEth(msg.sender, _amount, borrowId);
+
+        payable(msg.sender).transfer(_amount);
+
+        return borrowId;
+    }
+
+    function repayLoan(uint256 id) external payable {
+        if (s_borrows[id].user != msg.sender) revert LendingNft__NotABorrower();
+        if (s_borrows[id].loanEnd != 0) revert LendingNft__AlreadyRepay();
+        uint256 totalToRepay = needToRepay(id);
+        if (totalToRepay > msg.value) revert LendingNft__NotEnoughEth();
+
+        s_collaterals[msg.sender].borrow -= s_borrows[id].amount;
+        s_borrows[id].loanEnd = block.timestamp;
+        _delete(id);
+
+        emit RepayLoan(msg.sender, id, totalToRepay);
+    }
+
+    function needToRepay(uint256 id) public view returns (uint256) {
+        uint256 totalDays = ((block.timestamp - s_borrows[id].loanStart) /
+            DURATION) + 1;
+        uint256 dayFee = (s_borrows[id].amount * DEBT_FEE_PER_DAY) / PRECISION;
+        return totalDays * dayFee;
+    }
+
+    function _delete(uint256 _id) private {
+        uint256[] storage arr = s_borrowIds[msg.sender];
+        uint256 i;
+        uint256 len = arr.length;
+        for (i = 0; i < len; ++i) {
+            if (arr[i] == _id) {
+                arr[i] = arr[len - 1];
+                arr.pop();
+                break;
+            }
+        }
+    }
+
+    function getActualBorrows() external view returns (uint256[] memory) {
+        return s_borrowIds[msg.sender];
+    }
+
     function onERC721Received(
         address operator,
         address from,
@@ -201,8 +300,11 @@ contract LendingNft is IERC721Receiver {
         bytes calldata data
     ) external returns (bytes4) {}
 
+//---------------------------------------------------------------------------------------
+//                                      INVESTOR
+//---------------------------------------------------------------------------------------
+
     function deposit() public payable{
-        //?Timestamp? 
         invInfo memory newInv = invInfo(
             msg.value - ((msg.value * FEE) / 100),
             block.timestamp
@@ -218,7 +320,6 @@ contract LendingNft is IERC721Receiver {
     function withdraw(address payable _to, uint256 amount) payable public{
         if(!(addressInvestorExist[_to])) revert LendingNft_NotAnInvestor();
         if(amount > investors[_to].amount) revert LendingNft__ErrorPrice();
-        if(amount >)
 
         _to.transfer(amount);
 
@@ -242,8 +343,12 @@ contract LendingNft is IERC721Receiver {
         depositWithRewards = investors[_investor].amount;
     }
 
+//---------------------------------------------------------------------------------------
+//                                      LIQUIDATOR
+//---------------------------------------------------------------------------------------
+
     function liquidate(
-        address liquidator, 
+        address payable liquidator, 
         address user,
         uint256 requestId
         ) internal{
@@ -263,7 +368,7 @@ contract LendingNft is IERC721Receiver {
             );
             uint256 collaterallAmount = s_collaterals[request.user].deposit;
             s_collaterals[request.user].deposit = 0;
-            liquidator.transfer(collaterallAmount)
+            liquidator.transfer(collaterallAmount);
             request.status = RequestStatus.Liquidated;
             emit Liquidation(requestId, msg.sender, collaterallAmount, block.timestamp);
         }
