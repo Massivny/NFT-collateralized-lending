@@ -90,7 +90,7 @@ contract LendingNft is IERC721Receiver {
     address owner;
     address private s_acceptor;
     
-    uint256 private constant FEE = 3e18;
+    uint256 private constant FEE = 3;
     uint256 private constant PRECISION = 1e18;
     uint256 private constant LIQUIDATION_TRESHOLD = 2e18;
     uint256 private constant DEBT_FEE_PER_DAY = 5e15;
@@ -305,10 +305,10 @@ contract LendingNft is IERC721Receiver {
 //---------------------------------------------------------------------------------------
 
     function deposit() public payable{
-        invInfo memory newInv = invInfo(
-            msg.value - ((msg.value * FEE) / 100),
-            block.timestamp
-        );
+        invInfo memory newInv = invInfo({
+            amount: msg.value - ((msg.value * FEE) / 100),
+            timestamp: block.timestamp
+        });
 
         investors[msg.sender] = newInv;
         addressInvestorExist[msg.sender] = true;

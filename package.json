@@ -5,6 +5,9 @@
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
     "hardhat": "^2.22.2"
   },
+  "scripts": {
+    "test": "npx hardhat coverage"
+  },
   "dependencies": {
     "@openzeppelin/contracts": "^5.0.2"
   }
