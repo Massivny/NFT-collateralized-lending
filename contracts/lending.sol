@@ -12,6 +12,9 @@ contract LendingNft is IERC721Receiver {
     error LendingNft__ErrorPrice();
     error LendingNft__NotSuchNft(address token, uint256 tokenId);
     error LendingNft__IllHealthFactor();
+    error LendingNft__NotEnoughEth();
+    error LendingNft__NotABorrower();
+    error LendingNft__AlreadyRepay();
 
     event UserRequest(
         address indexed user,
@@ -35,6 +38,18 @@ contract LendingNft is IERC721Receiver {
         uint256 indexed tokenId
     );
 
+    event BorrowEth(
+        address indexed user,
+        uint256 amount,
+        uint256 indexed borrowId
+    );
+
+    event RepayLoan(
+        address indexed user,
+        uint256 indexed borrowId,
+        uint256 totalRepay
+    );
+
     enum RequestStatus {
         Pending,
         Accepted,
@@ -55,8 +70,17 @@ contract LendingNft is IERC721Receiver {
         uint256 borrow;
     }
 
+    struct BorrowInstance {
+        address user;
+        uint256 amount;
+        uint256 loanStart;
+        uint256 loanEnd;
+    }
+
     uint256 private constant PRECISION = 1e18;
     uint256 private constant LIQUIDATION_TRESHOLD = 2e18;
+    uint256 private constant DEBT_FEE_PER_DAY = 5e15;
+    uint256 private constant DURATION = 1 days;
 
     address private s_acceptor;
 
@@ -64,6 +88,8 @@ contract LendingNft is IERC721Receiver {
     mapping(address user => mapping(address nftContract => mapping(uint256 id => uint256 price))) depositedNfts;
     Request[] private s_requests;
     mapping(address user => Collateral) s_collaterals;
+    BorrowInstance[] private s_borrows;
+    mapping(address user => uint256[] ids) private s_borrowIds;
 
     constructor(address acceptor) payable {
         s_acceptor = acceptor;
@@ -144,6 +170,72 @@ contract LendingNft is IERC721Receiver {
                 (s_collaterals[user].deposit * PRECISION) /
                 s_collaterals[user].borrow;
         }
+    }
+
+    function borrowEth(uint256 _amount) public returns (uint256) {
+        if (address(this).balance < _amount) revert LendingNft__NotEnoughEth();
+
+        s_collaterals[msg.sender].borrow += _amount;
+        if (checkHealthFactor(msg.sender) < LIQUIDATION_TRESHOLD)
+            revert LendingNft__IllHealthFactor();
+
+        s_borrows.push(
+            BorrowInstance({
+                user: msg.sender,
+                amount: _amount,
+                loanStart: block.timestamp,
+                loanEnd: 0
+            })
+        );
+
+        uint256 borrowId = s_borrows.length - 1;
+
+        s_borrowIds[msg.sender].push(borrowId);
+
+        emit BorrowEth(msg.sender, _amount, borrowId);
+
+        payable(msg.sender).transfer(_amount);
+
+        return borrowId;
+    }
+
+    function repayLoan(uint256 id) external payable {
+        if (s_borrows[id].user != msg.sender) revert LendingNft__NotABorrower();
+        if (s_borrows[id].loanEnd != 0) revert LendingNft__AlreadyRepay();
+        uint256 totalToRepay = needToRepay(id);
+        if (totalToRepay > msg.value) revert LendingNft__NotEnoughEth();
+
+        s_collaterals[msg.sender].borrow -= s_borrows[id].amount;
+        s_borrows[id].loanEnd = block.timestamp;
+        _delete(id);
+
+        emit RepayLoan(msg.sender, id, totalToRepay);
+    }
+
+    function needToRepay(uint256 id) public view returns (uint256) {
+        uint256 totalDays = ((block.timestamp - s_borrows[id].loanStart) /
+            DURATION) + 1;
+        uint256 dayFee = (s_borrows[id].amount * DEBT_FEE_PER_DAY) / PRECISION;
+        return totalDays * dayFee;
+    }
+
+    //  mapping(address user => uint256[] ids) private s_borrowIds;
+
+    function _delete(uint256 _id) private {
+        uint256[] storage arr = s_borrowIds[msg.sender];
+        uint256 i;
+        uint256 len = arr.length;
+        for (i = 0; i < len; ++i) {
+            if (arr[i] == _id) {
+                arr[i] = arr[len - 1];
+                arr.pop();
+                break;
+            }
+        }
+    }
+
+    function getActualBorrows() external view returns (uint256[]) {
+        return s_borrowIds[msg.sender];
     }
 
     function onERC721Received(
