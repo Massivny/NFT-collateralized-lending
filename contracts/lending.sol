@@ -293,12 +293,12 @@ contract LendingNft is IERC721Receiver {
         return s_borrowIds[msg.sender];
     }
 
-    function onERC721Received(
-        address operator,
-        address from,
-        uint256 tokenId,
-        bytes calldata data
-    ) external returns (bytes4) {}
+     function onERC721Received(
+          address operator,
+          address from,
+          uint256 tokenId,
+          bytes calldata data
+     ) external returns (bytes4) {}
 
 //---------------------------------------------------------------------------------------
 //                                      INVESTOR
