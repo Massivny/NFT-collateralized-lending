@@ -89,8 +89,9 @@ contract LendingNft is IERC721Receiver {
     //Owns a market, Liquidate and moderate the lends
     address owner;
     address private s_acceptor;
-    
+    uint256 amountProfit;
     uint256 private constant FEE = 3;
+    uint256 private constant REWARD = 2e15;
     uint256 private constant PRECISION = 1e18;
     uint256 private constant LIQUIDATION_TRESHOLD = 2e18;
     uint256 private constant DEBT_FEE_PER_DAY = 5e15;
@@ -305,11 +306,12 @@ contract LendingNft is IERC721Receiver {
 //---------------------------------------------------------------------------------------
 
     function deposit() public payable{
+        amountProfit += (msg.value * FEE) / 100;
         invInfo memory newInv = invInfo({
-            amount: msg.value - ((msg.value * FEE) / 100),
+            amount: msg.value - amountProfit,
             timestamp: block.timestamp
         });
-
+        
         investors[msg.sender] = newInv;
         addressInvestorExist[msg.sender] = true;
 
@@ -321,7 +323,7 @@ contract LendingNft is IERC721Receiver {
         if(!(addressInvestorExist[_to])) revert LendingNft_NotAnInvestor();
         if(amount > investors[_to].amount) revert LendingNft__ErrorPrice();
 
-        _to.transfer(amount);
+        _to.transfer(amount+ REWARD);
 
         if(investors[_to].amount == 0)
         {
@@ -372,6 +374,18 @@ contract LendingNft is IERC721Receiver {
             request.status = RequestStatus.Liquidated;
             emit Liquidation(requestId, msg.sender, collaterallAmount, block.timestamp);
         }
+    }
+
+
+//---------------------------------------------------------------------------------------
+//                                      OWNER
+//---------------------------------------------------------------------------------------
+
+    function withdrawReward(address payable _owner) external {
+        require(msg.sender == owner, "You are not an owner");
+        require(!(amountProfit == 0), "Nothing to withdraw" );
+
+        _owner.transfer(amountProfit);
     }
 
     receive() external payable {
