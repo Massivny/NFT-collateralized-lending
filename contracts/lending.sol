@@ -81,7 +81,6 @@ contract LendingNft is IERC721Receiver {
         uint256 totalRepay
     );
 
-
 //---------------------------------------------------------------------------------------
 //                                STATE VARS AND STRUCTURES 
 //---------------------------------------------------------------------------------------
@@ -89,10 +88,11 @@ contract LendingNft is IERC721Receiver {
     //Owns a market, Liquidate and moderate the lends
     address owner;
     address private s_acceptor;
-    
+
     uint256 private constant FEE = 3;
     uint256 private constant PRECISION = 1e18;
     uint256 private constant LIQUIDATION_TRESHOLD = 2e18;
+    uint256 private constant NOT_BORROW_COLLATERAL = 100e18;
     uint256 private constant DEBT_FEE_PER_DAY = 5e15;
     uint256 private constant DURATION = 1 days;
 
@@ -221,7 +221,7 @@ contract LendingNft is IERC721Receiver {
         address user
     ) public view returns (uint256 healthFactor) {
         if (s_collaterals[user].borrow == 0) {
-            healthFactor = s_collaterals[user].deposit;
+            healthFactor = NOT_BORROW_COLLATERAL;
         } else {
             healthFactor =
                 (s_collaterals[user].deposit * PRECISION) /
@@ -273,7 +273,7 @@ contract LendingNft is IERC721Receiver {
         uint256 totalDays = ((block.timestamp - s_borrows[id].loanStart) /
             DURATION) + 1;
         uint256 dayFee = (s_borrows[id].amount * DEBT_FEE_PER_DAY) / PRECISION;
-        return totalDays * dayFee;
+        return s_borrows[id].amount + totalDays * dayFee;
     }
 
     function _delete(uint256 _id) private {
@@ -293,12 +293,49 @@ contract LendingNft is IERC721Receiver {
         return s_borrowIds[msg.sender];
     }
 
-     function onERC721Received(
-          address operator,
-          address from,
-          uint256 tokenId,
-          bytes calldata data
-     ) external returns (bytes4) {}
+    function onERC721Received(
+        address,
+        address from,
+        uint256 tokenId,
+        bytes calldata
+    ) external returns (bytes4) {
+        emit ReceiveNft(from, msg.sender, tokenId);
+        return
+            bytes4(
+                keccak256("onERC721Received(address,address,uint256,bytes)")
+            );
+    }
+
+    function getLastRequest() public view returns (Request memory) {
+        return s_requests[s_requests.length - 1];
+    }
+
+    function getRequests() public view returns (Request[] memory) {
+        return s_requests;
+    }
+
+    function getRequest(
+        uint256 requestId
+    ) public view returns (Request memory) {
+        return s_requests[requestId];
+    }
+
+    function getPriceOfDepositedNft(
+        address token,
+        uint256 tokenId
+    ) public view returns (uint256) {
+        return depositedNfts[msg.sender][token][tokenId];
+    }
+
+    function detBalances() public view returns (Collateral memory) {
+        return s_collaterals[msg.sender];
+    }
+
+    function getBorrow(
+        uint256 borrowId
+    ) public view returns (BorrowInstance memory) {
+        return s_borrows[borrowId];
+    }
 
 //---------------------------------------------------------------------------------------
 //                                      INVESTOR
