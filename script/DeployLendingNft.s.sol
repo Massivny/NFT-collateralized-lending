@@ -7,9 +7,8 @@ import {LendingNft} from "../contracts/lending.sol";
 
 contract DeployLendingNft is Script {
     function run() external returns (LendingNft) {
-        address acceptor = makeAddr("acceptor");
         vm.startBroadcast();
-        LendingNft lendingNft = new LendingNft(acceptor);
+        LendingNft lendingNft = new LendingNft(vm.envAddress("ACCEPTOR"));
         vm.stopBroadcast();
         return lendingNft;
     }

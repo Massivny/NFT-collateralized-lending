@@ -10,7 +10,7 @@ import {ERC721Mock} from "../mocks/ERC721Mock.sol";
 contract TestLendingNft is Test {
     LendingNft public lendingNft;
     address user1 = makeAddr("user1");
-    address acceptor = makeAddr("acceptor");
+    address acceptor = vm.envAddress("ACCEPTOR");
 
     struct Configs {
         address user;
