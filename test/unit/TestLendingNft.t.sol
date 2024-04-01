@@ -18,4 +18,4 @@ contract TestLendingNft is Test {
 
 // 0x4197abCfbc708Bb011488E175d2131bC366aabC4 - address NFT contract
 
-// function testRequestDepositNft() public {}
+function testRequestDepositNft() public {}
