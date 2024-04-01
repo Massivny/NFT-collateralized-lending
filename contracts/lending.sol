@@ -36,6 +36,8 @@ contract LendingNft is IERC721Receiver {
         uint256 _timestamp
     );
 
+    event withdrawRewardOwner(address indexed owner, uint256 amount);
+
     event Liquidation(
         uint256 indexed requestId,
         address indexed liquidator,
@@ -84,9 +86,10 @@ contract LendingNft is IERC721Receiver {
     //Owns a market, Liquidate and moderate the lends
     address owner;
     address private s_acceptor;
-
+    uint256 amountProfit;
     uint256 private constant FEE = 3;
     uint256 private constant PRECISION = 1e18;
+    uint256 private constant DAY_REWARD = 2e15;
     uint256 private constant LIQUIDATION_TRESHOLD = 2e18;
     uint256 private constant NOT_BORROW_COLLATERAL = 100e18;
     uint256 private constant DEBT_FEE_PER_DAY = 5e15;
@@ -338,6 +341,8 @@ contract LendingNft is IERC721Receiver {
     //---------------------------------------------------------------------------------------
 
     function deposit() public payable {
+        amountProfit += (msg.value * FEE) / 100;
+
         invInfo memory newInv = invInfo({
             amount: msg.value - ((msg.value * FEE) / 100),
             timestamp: block.timestamp
@@ -354,7 +359,11 @@ contract LendingNft is IERC721Receiver {
         if (!(addressInvestorExist[_to])) revert LendingNft_NotAnInvestor();
         if (amount > investors[_to].amount) revert LendingNft__ErrorPrice();
 
-        _to.transfer(amount);
+        _to.transfer(
+            amount +
+                (((block.timestamp - investors[_to].timestamp) / DURATION) *
+                    DAY_REWARD)
+        );
 
         if (investors[_to].amount == 0) {
             delete investors[_to];
@@ -409,6 +418,19 @@ contract LendingNft is IERC721Receiver {
                 block.timestamp
             );
         }
+    }
+
+    //---------------------------------------------------------------------------------------
+    //                                      OWNER
+    //---------------------------------------------------------------------------------------
+
+    function withdrawReward(address payable _owner) external {
+        require(msg.sender == owner, "You are not an owner");
+        require(!(amountProfit == 0), "Nothing to withdraw");
+
+        _owner.transfer(amountProfit);
+        emit withdrawRewardOwner(msg.sender, amountProfit);
+        amountProfit = 0;
     }
 
     receive() external payable {
